@@ -1,6 +1,10 @@
 import json
+import os
+import secrets
+import smtplib
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
+from email.mime.text import MIMEText
 from pathlib import Path
 import io
 import csv
@@ -20,6 +24,8 @@ STATUS_OPTIONS = ["Active", "Inactive"]
 DEFAULT_AVG_HOURS_PER_WEEK = 40.0
 BRANCH_LOOKUP = {branch.lower(): branch for branch in BRANCHES}
 STATUS_LOOKUP = {status.lower(): status for status in STATUS_OPTIONS}
+DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+PASSWORD_RESET_TOKEN_TTL_MINUTES = 60
 
 
 def get_db_connection():
@@ -60,6 +66,18 @@ def init_db():
                 email TEXT PRIMARY KEY,
                 password TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                token TEXT PRIMARY KEY,
+                email TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used_at TEXT
             )
             """
         )
@@ -152,13 +170,150 @@ def find_user(email):
 
 
 def create_user(email, password):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now().strftime(DATETIME_FORMAT)
     with get_db_connection() as conn:
         conn.execute(
             "INSERT INTO users (email, password, created_at) VALUES (?, ?, ?)",
             (email, password, now),
         )
         conn.commit()
+
+
+def update_user_password(email, password):
+    with get_db_connection() as conn:
+        conn.execute("UPDATE users SET password = ? WHERE email = ?", (password, email))
+        conn.commit()
+
+
+def get_password_reset_token_row(token):
+    with get_db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT token, email, created_at, expires_at, used_at
+            FROM password_reset_tokens
+            WHERE token = ?
+            """,
+            (token,),
+        ).fetchone()
+    return row
+
+
+def get_valid_password_reset_token_row(token):
+    row = get_password_reset_token_row(token)
+    if row is None:
+        return None
+
+    if row["used_at"]:
+        return None
+
+    try:
+        expires_at = datetime.strptime(row["expires_at"], DATETIME_FORMAT)
+    except ValueError:
+        return None
+
+    if datetime.now() > expires_at:
+        return None
+
+    return row
+
+
+def create_password_reset_token(email):
+    token = secrets.token_urlsafe(32)
+    created_at = datetime.now()
+    expires_at = created_at + timedelta(minutes=PASSWORD_RESET_TOKEN_TTL_MINUTES)
+
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO password_reset_tokens (token, email, created_at, expires_at, used_at)
+            VALUES (?, ?, ?, ?, NULL)
+            """,
+            (
+                token,
+                email,
+                created_at.strftime(DATETIME_FORMAT),
+                expires_at.strftime(DATETIME_FORMAT),
+            ),
+        )
+        conn.commit()
+
+    return token
+
+
+def mark_password_reset_token_used(token):
+    used_at = datetime.now().strftime(DATETIME_FORMAT)
+    with get_db_connection() as conn:
+        conn.execute("UPDATE password_reset_tokens SET used_at = ? WHERE token = ?", (used_at, token))
+        conn.commit()
+
+
+def get_smtp_config():
+    host = os.environ.get("SMTP_HOST", "").strip()
+    if not host:
+        return None
+
+    port_raw = os.environ.get("SMTP_PORT", "587").strip()
+    try:
+        port = int(port_raw)
+    except ValueError:
+        port = 587
+
+    username = os.environ.get("SMTP_USERNAME", "").strip()
+    password = os.environ.get("SMTP_PASSWORD", "")
+    from_email = os.environ.get("SMTP_FROM", "").strip() or username
+
+    use_tls = os.environ.get("SMTP_USE_TLS", "1").strip().lower() not in {"0", "false", "no"}
+    use_ssl = os.environ.get("SMTP_USE_SSL", "0").strip().lower() in {"1", "true", "yes"}
+
+    if not from_email:
+        return None
+
+    return {
+        "host": host,
+        "port": port,
+        "username": username or None,
+        "password": password or None,
+        "from_email": from_email,
+        "use_tls": use_tls,
+        "use_ssl": use_ssl,
+    }
+
+
+def send_email(to_email, subject, body):
+    cfg = get_smtp_config()
+    if cfg is None:
+        return False, "SMTP is not configured"
+
+    msg = MIMEText(body, _charset="utf-8")
+    msg["Subject"] = subject
+    msg["From"] = cfg["from_email"]
+    msg["To"] = to_email
+
+    try:
+        smtp_cls = smtplib.SMTP_SSL if cfg["use_ssl"] else smtplib.SMTP
+        with smtp_cls(cfg["host"], cfg["port"], timeout=15) as server:
+            if cfg["use_tls"] and not cfg["use_ssl"]:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+            if cfg["username"] and cfg["password"]:
+                server.login(cfg["username"], cfg["password"])
+            server.send_message(msg)
+    except Exception as exc:
+        return False, str(exc)
+
+    return True, None
+
+
+def send_password_reset_email(to_email, reset_link):
+    subject = "Reset your password"
+    body = (
+        "We received a request to reset your password.\n\n"
+        f"Reset link: {reset_link}\n\n"
+        f"This link expires in {PASSWORD_RESET_TOKEN_TTL_MINUTES} minutes.\n"
+        "If you did not request a password reset, you can ignore this email.\n"
+    )
+    return send_email(to_email, subject, body)
 
 
 def build_branch_counts(owner_email):
@@ -488,6 +643,10 @@ def about():
 @app.route('/login', methods=["GET", "POST"])
 def login():
     error = None
+    message = None
+
+    if request.method == "GET" and request.args.get("reset") == "1":
+        message = "Your password has been reset. Please log in."
 
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
@@ -503,7 +662,82 @@ def login():
             session["user_name"] = email.split("@")[0].title()
             return redirect(url_for("dashboard"))
 
-    return render_template("login.html", error=error)
+    return render_template("login.html", error=error, message=message)
+
+
+@app.route('/forgot-password', methods=["GET", "POST"])
+def forgot_password():
+    error = None
+    message = None
+    dev_reset_link = None
+
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+
+        if not email:
+            error = "Please enter your email."
+        else:
+            user = find_user(email)
+            if user is not None:
+                token = create_password_reset_token(email)
+                reset_link = url_for("reset_password", token=token, _external=True)
+
+                sent, send_error = send_password_reset_email(email, reset_link)
+                if not sent:
+                    print(f"[password-reset] Email send failed: {send_error}")
+                    print(f"[password-reset] Reset link for {email}: {reset_link}")
+                    if app.debug:
+                        dev_reset_link = reset_link
+
+            # Avoid leaking whether the email exists.
+            message = "If an account exists for that email, we sent a password reset link."
+
+    return render_template(
+        "forgot_password.html",
+        error=error,
+        message=message,
+        dev_reset_link=dev_reset_link,
+    )
+
+
+@app.route('/reset-password/<token>', methods=["GET", "POST"])
+def reset_password(token):
+    error = None
+    message = None
+
+    token_row = get_valid_password_reset_token_row(token)
+    if token_row is None:
+        error = "This password reset link is invalid or has expired."
+        return render_template(
+            "reset_password.html",
+            error=error,
+            message=message,
+            token_valid=False,
+            token=token,
+        )
+
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+
+        if not password or not confirm_password:
+            error = "All fields are required."
+        elif len(password) < 8:
+            error = "Password must be at least 8 characters."
+        elif password != confirm_password:
+            error = "Passwords do not match."
+        else:
+            update_user_password(token_row["email"], password)
+            mark_password_reset_token_used(token)
+            return redirect(url_for("login", reset=1))
+
+    return render_template(
+        "reset_password.html",
+        error=error,
+        message=message,
+        token_valid=True,
+        token=token,
+    )
 
 
 @app.route('/signup', methods=["GET", "POST"])
