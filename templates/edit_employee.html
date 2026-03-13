@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Employee</title>
+
+    <link
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+        rel="stylesheet"
+    >
+
+    <style>
+        :root {
+            --bg-a: #f6f8fb;
+            --bg-b: #eef3f9;
+            --card-border: #dbe5f0;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(145deg, var(--bg-a), var(--bg-b));
+            font-size: 17px;
+            line-height: 1.5;
+        }
+
+        .page {
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        .card-shell {
+            background: #ffffff;
+            border: 1px solid var(--card-border);
+            border-radius: 0;
+            padding: 24px 28px;
+            min-height: 100vh;
+        }
+
+        .btn {
+            font-size: 1rem;
+            padding: 0.55rem 0.95rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <section class="card-shell">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h1 class="h4 mb-0">Update Employee</h1>
+                <div class="d-flex gap-2 align-items-center"><a href="{{ url_for('history') }}" class="btn btn-outline-primary btn-sm">History</a><div class="text-muted">{{ user_name }}</div></div>
+            </div>
+
+            {% if error %}
+                <div class="alert alert-danger" role="alert">{{ error }}</div>
+            {% endif %}
+
+            <form method="post" action="{{ url_for('edit_employee', employee_id=employee.id) }}">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label for="id" class="form-label">Employee ID</label>
+                        <input id="id" name="id" class="form-control" value="{{ employee.id }}" required>
+                    </div>
+
+                    <div class="col-md-6">
+                        <label for="name" class="form-label">Name</label>
+                        <input id="name" name="name" class="form-control" value="{{ employee.name }}" required>
+                    </div>
+
+                    <div class="col-md-6">
+                        <label for="branch" class="form-label">Branch</label>
+                        <select id="branch" name="branch" class="form-select" required>
+                            {% for branch in branches %}
+                                <option value="{{ branch }}" {% if employee.branch == branch %}selected{% endif %}>{{ branch }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="col-md-6">
+                        <label for="hourly_rate" class="form-label">Hourly Rate</label>
+                        <input
+                            id="hourly_rate"
+                            name="hourly_rate"
+                            class="form-control"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value="{{ '%.2f'|format(employee.hourly_rate) }}"
+                            required
+                        >
+                    </div>
+
+                    <div class="col-md-6">
+                        <label for="phone_number" class="form-label">Phone Number</label>
+                        <input
+                            id="phone_number"
+                            name="phone_number"
+                            class="form-control"
+                            value="{{ employee.get('phone_number', '') }}"
+                            required
+                        >
+                    </div>
+
+                    <div class="col-md-6">
+                        <label for="status" class="form-label">Status</label>
+                        <select id="status" name="status" class="form-select" required>
+                            {% for status in statuses %}
+                                <option value="{{ status }}" {% if employee.status == status %}selected{% endif %}>{{ status }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="d-flex gap-2 mt-4">
+                    <button type="submit" class="btn btn-primary">Confirm Update</button>
+                    <a href="{{ url_for('employees') }}" class="btn btn-outline-secondary">Cancel</a>
+                </div>
+            </form>
+        </section>
+    </div>
+</body>
+</html>
+

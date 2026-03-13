@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Main Dashboard</title>
+
+    <link
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+        rel="stylesheet"
+    >
+
+    <style>
+        :root {
+            --bg-a: #f6f8fb;
+            --bg-b: #eef3f9;
+            --card-border: #dbe5f0;
+            --title: #1c2a39;
+            --muted: #5f6e80;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(145deg, var(--bg-a), var(--bg-b));
+            color: var(--title);
+            font-size: 17px;
+            line-height: 1.5;
+        }
+
+        .page {
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        .card-shell {
+            background: #ffffff;
+            border: 1px solid var(--card-border);
+            border-radius: 0;
+            padding: 24px 28px;
+            min-height: 100vh;
+        }
+
+        .top-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 14px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .search-wrap {
+            display: flex;
+            gap: 8px;
+        }
+
+        .user-pill {
+            font-weight: 600;
+            color: #17395a;
+            background: #e8f1ff;
+            border: 1px solid #cce0ff;
+            border-radius: 10px;
+            padding: 10px 14px;
+            white-space: nowrap;
+        }
+
+        .nav-row {
+            border: 1px solid var(--card-border);
+            border-radius: 10px;
+            padding: 8px;
+            display: flex;
+            gap: 8px;
+            margin-bottom: 14px;
+            background: #f9fbff;
+            overflow-x: auto;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+
+        .stat-box {
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 14px;
+            background: #ffffff;
+            min-height: 120px;
+        }
+
+        .stat-label {
+            font-size: 1rem;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+
+        .stat-value {
+            font-size: 2.3rem;
+            font-weight: 700;
+            color: #102f4a;
+            line-height: 1;
+        }
+
+        .action-box {
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 14px;
+            background: #fbfdff;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .recent-box {
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 18px;
+            background: #ffffff;
+        }
+
+        .recent-title,
+        .action-title {
+            margin-bottom: 10px;
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .btn {
+            font-size: 1rem;
+            padding: 0.55rem 0.95rem;
+        }
+
+        .table {
+            font-size: 1rem;
+        }
+
+        .recent-box table td,
+        .recent-box table th {
+            padding-top: 0.85rem;
+            padding-bottom: 0.85rem;
+            vertical-align: middle;
+        }
+
+        @media (max-width: 992px) {
+            .stat-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 640px) {
+            .top-row {
+                grid-template-columns: 1fr;
+            }
+
+            .search-wrap {
+                flex-direction: column;
+            }
+
+            .stat-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <section class="card-shell">
+            <div class="top-row">
+                <form class="search-wrap" role="search" method="get" action="{{ url_for('employees') }}">
+                    <input type="text" class="form-control" name="q" placeholder="Search employee by name">
+                    <button type="submit" class="btn btn-primary">Search</button>
+                </form>
+
+                <div class="d-flex gap-2 align-items-center">
+                    <div class="user-pill">{{ user_name }}</div>
+                    <a href="{{ url_for('logout') }}" class="btn btn-outline-secondary btn-sm">Log out</a>
+                </div>
+            </div>
+
+            <nav class="nav-row" aria-label="Dashboard navigation">
+                <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-primary">Dashboard</a>
+                <a href="{{ url_for('employees') }}" class="btn btn-sm btn-outline-primary">Employee</a>
+                <a href="{{ url_for('history') }}" class="btn btn-sm btn-outline-primary">History</a>
+                <a href="{{ url_for('report') }}" class="btn btn-sm btn-outline-primary">Report</a>
+            </nav>
+
+            <div class="stat-grid">
+                <article class="stat-box">
+                    <div class="stat-label">Total Employees in Company</div>
+                    <div class="stat-value">{{ total_employees }}</div>
+                </article>
+
+                <article class="stat-box">
+                    <div class="stat-label">Headquarters Employees</div>
+                    <div class="stat-value">{{ branch_counts['Headquarters'] }}</div>
+                </article>
+
+                <article class="stat-box">
+                    <div class="stat-label">East Branch Employees</div>
+                    <div class="stat-value">{{ branch_counts['East Branch'] }}</div>
+                </article>
+
+                <article class="stat-box">
+                    <div class="stat-label">West Branch Employees</div>
+                    <div class="stat-value">{{ branch_counts['West Branch'] }}</div>
+                </article>
+            </div>
+
+            <section class="action-box">
+                <div class="action-title">Actions</div>
+                <div class="action-buttons">
+                    <button class="btn btn-outline-success" type="button">Update Rate</button>
+                    <a href="{{ url_for('history') }}" class="btn btn-outline-secondary">View History</a>
+                    <a href="{{ url_for('report') }}" class="btn btn-outline-dark">Reports</a>
+                </div>
+            </section>
+
+            <section class="recent-box">
+                <div class="recent-title">Recent Rate Changes</div>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th>Employee</th>
+                                <th>Branch</th>
+                                <th>New Rate</th>
+                                <th>Old Rate</th>
+                                <th>Date</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in recent_rate_changes %}
+                                <tr>
+                                    <td>{{ item.employee }}</td>
+                                    <td>{{ item.branch }}</td>
+                                    <td>{{ item.new_rate }}</td>
+                                    <td>{{ item.old_rate }}</td>
+                                    <td>{{ item.date }}</td>
+                                </tr>
+                            {% endfor %}
+                            {% if not recent_rate_changes %}
+                                <tr>
+                                    <td colspan="5" class="text-center text-muted py-3">No recent rate changes yet.</td>
+                                </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+    </div>
+</body>
+</html>
+
+
