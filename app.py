@@ -28,6 +28,7 @@ DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 PASSWORD_RESET_TOKEN_TTL_MINUTES = 60
 
 
+# Database helpers.
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -36,6 +37,7 @@ def get_db_connection():
 
 def migrate_legacy_users_if_needed(conn):
     user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    # Skip this if users are already in the database.
     if user_count != 0 or not LEGACY_USERS_FILE.exists():
         return
 
@@ -46,10 +48,11 @@ def migrate_legacy_users_if_needed(conn):
 
     if not isinstance(legacy_data, dict):
         return
-                                                                                              
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for email, password in legacy_data.items():
         if isinstance(email, str) and isinstance(password, str):
+            # Save emails in lowercase for consistency.
             conn.execute(
                 "INSERT OR IGNORE INTO users (email, password, created_at) VALUES (?, ?, ?)",
                 (email.strip().lower(), password, now),
@@ -60,6 +63,7 @@ def init_db():
     DATA_DIR.mkdir(exist_ok=True)
 
     with get_db_connection() as conn: 
+        # Create the tables the app needs.
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -119,7 +123,7 @@ def init_db():
         if "owner_email" not in employee_columns:
             conn.execute("ALTER TABLE employees ADD COLUMN owner_email TEXT NOT NULL DEFAULT ''")
 
-        # Migrate legacy employees schema where id was globally unique (PRIMARY KEY on id).
+        # Fix older employee tables that used only `id` as the main key.
         employee_pk_cols = [
             row["name"] for row in conn.execute("PRAGMA table_info(employees)").fetchall() if row["pk"] > 0
         ]
@@ -153,7 +157,8 @@ def init_db():
             conn.execute("ALTER TABLE change_history ADD COLUMN owner_email TEXT NOT NULL DEFAULT ''")
 
         migrate_legacy_users_if_needed(conn)
-        # Remove stale records owned by users that no longer exist.
+
+        # Remove old rows that do not belong to a real user.
         conn.execute(
             "DELETE FROM employees WHERE owner_email = '' OR owner_email NOT IN (SELECT email FROM users)"
         )
@@ -163,13 +168,16 @@ def init_db():
         conn.commit()
 
 
+# User account helpers.
 def find_user(email):
+    # Look up one user by email.
     with get_db_connection() as conn:
         row = conn.execute("SELECT email, password FROM users WHERE email = ?", (email,)).fetchone()
     return row
 
 
 def create_user(email, password):
+    # Add a new user to the database.
     now = datetime.now().strftime(DATETIME_FORMAT)
     with get_db_connection() as conn:
         conn.execute(
@@ -180,12 +188,14 @@ def create_user(email, password):
 
 
 def update_user_password(email, password):
+    # Save the new password for this user.
     with get_db_connection() as conn:
         conn.execute("UPDATE users SET password = ? WHERE email = ?", (password, email))
         conn.commit()
 
 
 def get_password_reset_token_row(token):
+    # Get one reset token from the database.
     with get_db_connection() as conn:
         row = conn.execute(
             """
@@ -200,6 +210,7 @@ def get_password_reset_token_row(token):
 
 def get_valid_password_reset_token_row(token):
     row = get_password_reset_token_row(token)
+    # Return nothing if the token is missing, used, or expired.
     if row is None:
         return None
 
@@ -218,6 +229,7 @@ def get_valid_password_reset_token_row(token):
 
 
 def create_password_reset_token(email):
+    # Create a new password reset token.
     token = secrets.token_urlsafe(32)
     created_at = datetime.now()
     expires_at = created_at + timedelta(minutes=PASSWORD_RESET_TOKEN_TTL_MINUTES)
@@ -241,6 +253,7 @@ def create_password_reset_token(email):
 
 
 def mark_password_reset_token_used(token):
+    # Mark the reset token as already used.
     used_at = datetime.now().strftime(DATETIME_FORMAT)
     with get_db_connection() as conn:
         conn.execute("UPDATE password_reset_tokens SET used_at = ? WHERE token = ?", (used_at, token))
@@ -248,6 +261,7 @@ def mark_password_reset_token_used(token):
 
 
 def get_smtp_config():
+    # Read email settings from environment variables.
     host = os.environ.get("SMTP_HOST", "").strip()
     if not host:
         return None
@@ -280,6 +294,7 @@ def get_smtp_config():
 
 
 def send_email(to_email, subject, body):
+    # Send one email message.
     cfg = get_smtp_config()
     if cfg is None:
         return False, "SMTP is not configured"
@@ -306,6 +321,7 @@ def send_email(to_email, subject, body):
 
 
 def send_password_reset_email(to_email, reset_link):
+    # Build and send the password reset email.
     subject = "Reset your password"
     body = (
         "We received a request to reset your password.\n\n"
@@ -316,7 +332,9 @@ def send_password_reset_email(to_email, reset_link):
     return send_email(to_email, subject, body)
 
 
+# Employee and history helpers.
 def build_branch_counts(owner_email):
+    # Count how many employees are in each branch.
     counts = {branch: 0 for branch in BRANCHES}
     with get_db_connection() as conn:
         rows = conn.execute(
@@ -330,12 +348,14 @@ def build_branch_counts(owner_email):
 
 
 def total_employee_count(owner_email):
+    # Count all employees for this user.
     with get_db_connection() as conn:
         count = conn.execute("SELECT COUNT(*) FROM employees WHERE owner_email = ?", (owner_email,)).fetchone()[0]
     return count
 
 
 def get_employees(owner_email, selected_branch, search_query):
+    # Get employees for one user, with optional filters.
     sql = "SELECT id, name, branch, hourly_rate, phone_number, status FROM employees WHERE owner_email = ?"
     params = [owner_email]
 
@@ -356,6 +376,7 @@ def get_employees(owner_email, selected_branch, search_query):
 
  
 def find_employee(employee_id, owner_email):
+    # Get one employee by ID.
     with get_db_connection() as conn:
         row = conn.execute(
             "SELECT id, name, branch, hourly_rate, phone_number, status FROM employees WHERE id = ? AND owner_email = ?",
@@ -374,11 +395,13 @@ def generate_employee_id(owner_email):
         if isinstance(emp_id, str) and emp_id.startswith("E") and emp_id[1:].isdigit():
             numeric_ids.append(int(emp_id[1:]))
 
+    # Make the next employee ID like E001, E002, and so on.
     return f"E{(max(numeric_ids, default=0) + 1):03d}"
 
 
 def log_change(employee, change_type, old_rate, new_rate, details="", conn=None):
     owns_connection = conn is None
+    # Save a change in the history table.
     db_conn = conn if conn is not None else get_db_connection()
 
     db_conn.execute(
@@ -408,6 +431,7 @@ def log_change(employee, change_type, old_rate, new_rate, details="", conn=None)
 
 
 def get_history_entries(owner_email, search_query, change_type_filter):
+    # Get history rows using the selected filters.
     sql = (
         "SELECT timestamp, employee_id, employee_name, branch, "
         "change_type, old_rate, new_rate, details, changed_by "
@@ -444,6 +468,7 @@ def get_history_entries(owner_email, search_query, change_type_filter):
 
 
 def get_history_summary(owner_email):
+    # Count how many changes were added, updated, or removed.
     with get_db_connection() as conn:
         rows = conn.execute(
             "SELECT change_type, COUNT(*) AS cnt FROM change_history WHERE owner_email = ? GROUP BY change_type",
@@ -465,6 +490,7 @@ def get_history_summary(owner_email):
 
 
 def get_recent_rate_changes(owner_email, limit=10):
+    # Get recent pay changes for the dashboard.
     with get_db_connection() as conn:
         rows = conn.execute(
             """
@@ -493,6 +519,7 @@ def get_recent_rate_changes(owner_email, limit=10):
 
 
 def find_employee_for_report(employee_input, owner_email):
+    # Find an employee by ID or by name for the report page.
     cleaned = employee_input.strip()
     if not cleaned:
         return None
@@ -520,6 +547,7 @@ def build_report_metrics(employee, year_int):
     avg_hours_per_week = DEFAULT_AVG_HOURS_PER_WEEK
     full_year_hours = avg_hours_per_week * 52
 
+    # Estimate worked hours and pay for the selected year.
     if year_int < current_year:
         total_hours_as_of_now = full_year_hours
     elif year_int == current_year:
@@ -539,6 +567,7 @@ def build_report_metrics(employee, year_int):
 
 
 def get_employee_history_for_year(owner_email, employee_id, year_value):
+    # Get change history for one employee in one year.
     with get_db_connection() as conn:
         rows = conn.execute(
             """
@@ -555,13 +584,16 @@ def get_employee_history_for_year(owner_email, employee_id, year_value):
     return [dict(row) for row in rows]
 
 
+# Small helper functions.
 def require_login_redirect():
+    # Send logged-out users back to the login page.
     if not session.get("user_email"):
         return redirect(url_for("login"))
     return None
 
 
 def safe_next_url(raw_next):
+    # Only allow return links that stay inside the employees page.
     if not raw_next:
         return url_for("employees")
     if raw_next.startswith("/employees"):
@@ -570,11 +602,13 @@ def safe_next_url(raw_next):
 
 
 def normalize_excel_value(value):
+    # Turn empty Excel values into blank text.
     if value is None:
         return ""
     return str(value).strip()
 
 
+# Excel import helpers.
 def parse_employees_xlsx(file_storage):
     try:
         from openpyxl import load_workbook
@@ -592,6 +626,7 @@ def parse_employees_xlsx(file_storage):
         return None, "The Excel file is empty."
 
     raw_headers = rows[0]
+    # Clean up column names so different header styles still work.
     headers = [
         normalize_excel_value(h).lower().replace(" ", "_").replace("-", "_")
         for h in raw_headers
@@ -616,6 +651,7 @@ def parse_employees_xlsx(file_storage):
                 empty_row = False
             record[header] = normalized
 
+        # Ignore empty rows in the spreadsheet.
         if empty_row:
             continue
 
@@ -628,8 +664,10 @@ def parse_employees_xlsx(file_storage):
     return data_rows, None
 
 
+# Basic page routes.
 @app.route('/')
 def home():
+    # Send logged-in users to the dashboard.
     if session.get("user_email"):
         return redirect(url_for("dashboard"))
     return redirect(url_for("login"))
@@ -637,9 +675,11 @@ def home():
 
 @app.route('/about')
 def about():
+    # Show the about page.
     return render_template("about.html")
 
 
+# Login and password reset routes.
 @app.route('/login', methods=["GET", "POST"])
 def login():
     error = None
@@ -649,6 +689,7 @@ def login():
         message = "Your password has been reset. Please log in."
 
     if request.method == "POST":
+        # Save the email in lowercase before checking the account.
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
 
@@ -689,7 +730,7 @@ def forgot_password():
                     if app.debug:
                         dev_reset_link = reset_link
 
-            # Avoid leaking whether the email exists.
+            # Show the same message even if the email is not found.
             message = "If an account exists for that email, we sent a password reset link."
 
     return render_template(
@@ -705,6 +746,7 @@ def reset_password(token):
     error = None
     message = None
 
+    # Check that the reset link is still valid.
     token_row = get_valid_password_reset_token_row(token)
     if token_row is None:
         error = "This password reset link is invalid or has expired."
@@ -717,6 +759,7 @@ def reset_password(token):
         )
 
     if request.method == "POST":
+        # Check the new password before saving it.
         password = request.form.get("password", "")
         confirm_password = request.form.get("confirm_password", "")
 
@@ -745,6 +788,7 @@ def signup():
     error = None
    
     if request.method == "POST":
+        # Read the signup form values.
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
         confirm_password = request.form.get("confirm_password", "")
@@ -764,8 +808,10 @@ def signup():
     return render_template("signup.html", error=error)
 
 
+# Dashboard and employee routes.
 @app.route('/dashboard')
 def dashboard():
+    # Show dashboard totals and recent changes.
     auth_redirect = require_login_redirect()
     if auth_redirect:
         return auth_redirect
@@ -787,6 +833,7 @@ def dashboard():
 
 @app.route('/employees')
 def employees():
+    # Show the employee list with filters.
     auth_redirect = require_login_redirect()
     if auth_redirect:
         return auth_redirect
@@ -822,6 +869,7 @@ def import_employees_excel():
     next_url = url_for("employees")
     uploaded_file = request.files.get("excel_file")
 
+    # Make sure a file was uploaded before reading it.
     if uploaded_file is None or uploaded_file.filename is None or uploaded_file.filename.strip() == "":
         flash("Please choose an Excel file (.xlsx) to import.", "danger")
         return redirect(next_url)
@@ -838,10 +886,12 @@ def import_employees_excel():
     inserted_count = 0
     updated_count = 0
     skipped_count = 0
+    # Save a few skipped rows to show in the final message.
     skipped_examples = []
 
     with get_db_connection() as conn:
         for record in records:
+            # Check each row before adding or updating it.
             row_num = record["_row_number"]
             employee_id = record.get("id", "").upper()
             name = record.get("name", "")
@@ -895,6 +945,7 @@ def import_employees_excel():
                 "status": normalized_status,
             }
 
+            # Update the employee if the ID already exists.
             if existing is None:
                 conn.execute(
                     """
@@ -989,6 +1040,7 @@ def add_employee():
     error = None
 
     if request.method == "POST":
+        # Check the form before creating the employee.
         name = request.form.get("name", "").strip()
         branch = request.form.get("branch", "").strip()
         hourly_rate_raw = request.form.get("hourly_rate", "").strip()
@@ -1090,6 +1142,7 @@ def edit_employee(employee_id):
                 error = "Employee ID already exists. Use a unique ID."
             if error is None:
                 old_rate = f"${employee['hourly_rate']:.2f}"
+                # Keep the old values so the history log can show what changed.
                 old_snapshot = employee.copy()
 
                 with get_db_connection() as conn:
@@ -1140,6 +1193,7 @@ def edit_employee(employee_id):
 
 @app.route('/employees/<employee_id>/remove', methods=["GET", "POST"])
 def remove_employee(employee_id):
+    # Show the remove page and delete after confirmation.
     auth_redirect = require_login_redirect()
     if auth_redirect:
         return auth_redirect
@@ -1168,8 +1222,10 @@ def remove_employee(employee_id):
     )
 
 
+# History and report routes.
 @app.route('/history')
 def history():
+    # Show saved change history.
     auth_redirect = require_login_redirect()
     if auth_redirect:
         return auth_redirect
@@ -1195,6 +1251,7 @@ def history():
 
 @app.route('/report', methods=["GET", "POST"])
 def report():
+    # Build the report page for one employee and year.
     auth_redirect = require_login_redirect()
     if auth_redirect:
         return auth_redirect
@@ -1218,6 +1275,7 @@ def report():
             if employee is None:
                 error = "No employee found with that name or ID."
             else:
+                # Build the report details for the selected employee and year.
                 metrics = build_report_metrics(employee, int(year_value))
                 year_history = get_employee_history_for_year(owner_email, employee["id"], year_value)
 
@@ -1244,6 +1302,7 @@ def report():
 
 @app.route('/report/download', methods=["POST"])
 def download_report():
+    # Download the report as a CSV file.
     auth_redirect = require_login_redirect()
     if auth_redirect:
         return auth_redirect
@@ -1259,6 +1318,7 @@ def download_report():
     if employee is None:
         return redirect(url_for("report"))
 
+    # Build the report again using the latest saved data.
     metrics = build_report_metrics(employee, int(year_value))
 
     csv_buffer = io.StringIO()
@@ -1297,6 +1357,7 @@ def download_report():
 
 @app.route('/logout')
 def logout():
+    # Clear the session and log the user out.
     session.clear()
     return redirect(url_for("login"))
 
