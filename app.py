@@ -123,7 +123,7 @@ def init_db():
         if "owner_email" not in employee_columns:
             conn.execute("ALTER TABLE employees ADD COLUMN owner_email TEXT NOT NULL DEFAULT ''")
 
-        # Fix older employee tables that used only `id` as the main key.
+        # Fix older employee tables that used only `id` as the main key
         employee_pk_cols = [
             row["name"] for row in conn.execute("PRAGMA table_info(employees)").fetchall() if row["pk"] > 0
         ]
@@ -253,7 +253,7 @@ def create_password_reset_token(email):
 
 
 def mark_password_reset_token_used(token):
-    # Mark the reset token as already used.
+    
     used_at = datetime.now().strftime(DATETIME_FORMAT)
     with get_db_connection() as conn:
         conn.execute("UPDATE password_reset_tokens SET used_at = ? WHERE token = ?", (used_at, token))
@@ -261,7 +261,7 @@ def mark_password_reset_token_used(token):
 
 
 def get_smtp_config():
-    # Read email settings from environment variables.
+    
     host = os.environ.get("SMTP_HOST", "").strip()
     if not host:
         return None
@@ -294,7 +294,7 @@ def get_smtp_config():
 
 
 def send_email(to_email, subject, body):
-    # Send one email message.
+    # Send one email message
     cfg = get_smtp_config()
     if cfg is None:
         return False, "SMTP is not configured"
@@ -353,26 +353,74 @@ def total_employee_count(owner_email):
         count = conn.execute("SELECT COUNT(*) FROM employees WHERE owner_email = ?", (owner_email,)).fetchone()[0]
     return count
 
+def merge_sort_records(records, key_func, reverse=False):
+    if len(records) <= 1:
+        return records[:]
+
+    midpoint = len(records) // 2
+    left_half = merge_sort_records(records[:midpoint], key_func, reverse=reverse)
+    right_half = merge_sort_records(records[midpoint:], key_func, reverse=reverse)
+
+    merged = []
+    left_index = 0
+    right_index = 0
+
+    while left_index < len(left_half) and right_index < len(right_half):
+        left_item = left_half[left_index]
+        right_item = right_half[right_index]
+        left_key = key_func(left_item)
+        right_key = key_func(right_item)
+
+        if reverse:
+            take_left = left_key >= right_key
+        else:
+            take_left = left_key <= right_key
+
+        if take_left:
+            merged.append(left_item)
+            left_index += 1
+        else:
+            merged.append(right_item)
+            right_index += 1
+
+    merged.extend(left_half[left_index:])
+    merged.extend(right_half[right_index:])
+    return merged
+
+
+def record_matches_query(record, fields, search_query):
+    if not search_query:
+        return True
+
+    lowered_query = search_query.lower()
+    for field in fields:
+        value = str(record.get(field, "")).lower()
+        if lowered_query in value:
+            return True
+
+    return False
+
 
 def get_employees(owner_email, selected_branch, search_query):
-    # Get employees for one user, with optional filters.
-    sql = "SELECT id, name, branch, hourly_rate, phone_number, status FROM employees WHERE owner_email = ?"
-    params = [owner_email]
+    # Get employees for one user then search and sort them 
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, name, branch, hourly_rate, phone_number, status FROM employees WHERE owner_email = ?",
+            (owner_email,),
+        ).fetchall()
+
+    employees = [dict(row) for row in rows]
 
     if selected_branch != "All":
-        sql += " AND branch = ?"
-        params.append(selected_branch)
+        employees = [employee for employee in employees if employee["branch"] == selected_branch]
 
-    if search_query:
-        sql += " AND lower(name) LIKE ?"
-        params.append(f"%{search_query}%")
+    employees = [
+        employee
+        for employee in employees
+        if record_matches_query(employee, ("name",), search_query)
+    ]
 
-    sql += " ORDER BY id"
-
-    with get_db_connection() as conn:
-        rows = conn.execute(sql, params).fetchall()
-
-    return [dict(row) for row in rows]
+    return merge_sort_records(employees, lambda employee: str(employee["id"]).lower())
 
  
 def find_employee(employee_id, owner_email):
@@ -395,13 +443,13 @@ def generate_employee_id(owner_email):
         if isinstance(emp_id, str) and emp_id.startswith("E") and emp_id[1:].isdigit():
             numeric_ids.append(int(emp_id[1:]))
 
-    # Make the next employee ID like E001, E002, and so on.
+    # Make the next employee ID like E001, E002, and so on
     return f"E{(max(numeric_ids, default=0) + 1):03d}"
 
 
 def log_change(employee, change_type, old_rate, new_rate, details="", conn=None):
     owns_connection = conn is None
-    # Save a change in the history table.
+    # Save a change in the history table
     db_conn = conn if conn is not None else get_db_connection()
 
     db_conn.execute(
@@ -431,44 +479,43 @@ def log_change(employee, change_type, old_rate, new_rate, details="", conn=None)
 
 
 def get_history_entries(owner_email, search_query, change_type_filter):
-    # Get history rows using the selected filters.
-    sql = (
-        "SELECT timestamp, employee_id, employee_name, branch, "
-        "change_type, old_rate, new_rate, details, changed_by "
-        "FROM change_history"
-    )
-    params = [owner_email]
-    conditions = ["owner_email = ?"]
+    # Get history rows using memory filtering and merge sort
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, timestamp, employee_id, employee_name, branch,
+                   change_type, old_rate, new_rate, details, changed_by
+            FROM change_history
+            WHERE owner_email = ?
+            """,
+            (owner_email,),
+        ).fetchall()
+
+    history_rows = [dict(row) for row in rows]
 
     if search_query:
-        like_value = f"%{search_query}%"
-        conditions.append(
-            "("
-            "lower(employee_name) LIKE ?"
-            " OR lower(employee_id) LIKE ?"
-            " OR lower(branch) LIKE ?"
-            " OR lower(change_type) LIKE ?"
-            ")"
-        )
-        params.extend([like_value, like_value, like_value, like_value])
+        history_rows = [
+            row
+            for row in history_rows
+            if record_matches_query(
+                row,
+                ("employee_name", "employee_id", "branch", "change_type"),
+                search_query,
+            )
+        ]
 
     if change_type_filter:
-        conditions.append("change_type = ?")
-        params.append(change_type_filter)
+        history_rows = [row for row in history_rows if row["change_type"] == change_type_filter]
 
-    if conditions:
-        sql += " WHERE " + " AND ".join(conditions)
+    sorted_rows = merge_sort_records(history_rows, lambda row: row["id"], reverse=True)
+    for row in sorted_rows:
+        row.pop("id", None)
 
-    sql += " ORDER BY id DESC"
-
-    with get_db_connection() as conn:
-        rows = conn.execute(sql, params).fetchall()
-
-    return [dict(row) for row in rows]
+    return sorted_rows
 
 
 def get_history_summary(owner_email):
-    # Count how many changes were added, updated, or removed.
+    # Count how many changes were added, updated, or removed
     with get_db_connection() as conn:
         rows = conn.execute(
             "SELECT change_type, COUNT(*) AS cnt FROM change_history WHERE owner_email = ? GROUP BY change_type",
@@ -490,7 +537,7 @@ def get_history_summary(owner_email):
 
 
 def get_recent_rate_changes(owner_email, limit=10):
-    # Get recent pay changes for the dashboard.
+    # Get recent pay changes for the dashboard
     with get_db_connection() as conn:
         rows = conn.execute(
             """
@@ -519,7 +566,7 @@ def get_recent_rate_changes(owner_email, limit=10):
 
 
 def find_employee_for_report(employee_input, owner_email):
-    # Find an employee by ID or by name for the report page.
+    # Find an employee by ID or by name for the report page
     cleaned = employee_input.strip()
     if not cleaned:
         return None
@@ -1302,7 +1349,7 @@ def report():
 
 @app.route('/report/download', methods=["POST"])
 def download_report():
-    # Download the report as a CSV file.
+    # Download the report as a CSV file
     auth_redirect = require_login_redirect()
     if auth_redirect:
         return auth_redirect
@@ -1318,7 +1365,7 @@ def download_report():
     if employee is None:
         return redirect(url_for("report"))
 
-    # Build the report again using the latest saved data.
+    # report again using the latest saved data
     metrics = build_report_metrics(employee, int(year_value))
 
     csv_buffer = io.StringIO()
